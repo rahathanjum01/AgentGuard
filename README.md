@@ -194,7 +194,7 @@ python scripts/benchmark.py --iterations 100
 
 It reports retrieval and end-to-end p50/p95 separately and prints active retrieval modes. A run is a Moss benchmark only when every sample reports `MOSS`; otherwise the output explicitly says that it is not a Moss benchmark. Configure the Moss credentials above and populate the configured index (for the deployed demo, `agentguard-context-v2`) before recording Moss results.
 
-When `MOSS_ENABLED=true`, the benchmark first performs one Moss preflight request. If it cannot retrieve through Moss, it stops before the full run to conserve cloud usage.
+When Moss credentials are configured (and `MOSS_ENABLED` is not explicitly `false`), the benchmark first performs one Moss preflight request. If it cannot retrieve through Moss, it stops before the full run to conserve cloud usage.
 
 The gateway connects to retrieval through `src/retrieval_service.py`. That service selects the Moss adapter when configured, uses the `LOCAL_DEMO` provider only when Moss is not configured, normalizes the result, and fails closed with `MOSS_ERROR` when a configured provider fails. Retrieval evidence is returned separately from the policy decision; retrieval alone never authorizes a tool.
 
