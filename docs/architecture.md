@@ -17,8 +17,9 @@ flowchart TD
 
     subgraph L2["Layer 2: Context Retrieval Layer (src/retrieval)"]
         ADAPT["Context Retrieval Adapter"]
-        MOSS[("Moss Semantic Search (sub-10ms)")]
+        MOSS[("Moss local index runtime")]
         LOCAL["Local Demo Fallback"]
+        FAIL["MOSS_ERROR (fail closed)"]
     end
 
     subgraph L3["Layer 3: Policy Evaluation Layer (src/policy)"]
@@ -39,9 +40,11 @@ flowchart TD
 
     GW --> APIM
     APIM --> ADAPT
-    ADAPT --> MOSS
-    ADAPT --> LOCAL
+    ADAPT -->|Moss configured| MOSS
+    ADAPT -->|Moss not configured| LOCAL
     MOSS --> NORM
+    MOSS -->|load/query failure| FAIL
+    FAIL --> NORM
     LOCAL --> NORM
     NORM --> POLICY
     SEC --> POLICY
@@ -62,22 +65,22 @@ flowchart TD
 
 ### Layer 2: Context Retrieval Layer (`src/retrieval/`)
 - **Components**: `retrieval_service.py`, `moss_client.py`, `local_retrieval.py`, `retrieval_models.py`
-- **Technologies**: Moss Vector DB, Rust, Python, gRPC/REST client
-- **Role**: Orchestrates context retrieval. Queries Moss's high-performance vector index for sub-10ms context retrieval when configured, with seamless fail-closed fallback to local demo retrieval.
+- **Technologies**: Moss Python SDK with its local Rust runtime, Python, and SQLite for the explicit local demo provider
+- **Role**: Loads the configured Moss cloud index into the local runtime, then queries it with an exact `doc_hash` metadata filter. `LOCAL_DEMO` is selected only when Moss is unconfigured; a configured-provider failure becomes `MOSS_ERROR` and is blocked by policy.
 
 ### Layer 3: Policy Evaluation Layer (`src/policy/`)
 - **Components**: `policy_engine.py`, `policy_models.py`, `context_normalizer.py`, `moss_validator.py`, `evaluator.py`, `evaluation_cases.py`
-- **Technologies**: Python, JSON-Schema, Open Policy Agent (OPA) / Deterministic engine
+- **Technologies**: Python and Pydantic models
 - **Role**: Normalizes trust metadata, enforces strict action-specific thresholds (e.g. 0.90+ for payments, 0.85+ for autonomous execution, 0.70–0.85 for human review), and detects prompt injection and tampering attempts.
 
 ### Layer 4: Execution & Review Layer (`src/execution_review/`)
 - **Components**: `execution_service.py`, `execution_models.py`, `review_service.py`, `review.py`
-- **Technologies**: Python, LangChain Tool boundaries, Streamlit / HITL UI
+- **Technologies**: Python and Streamlit HITL UI
 - **Role**: Executes approved actions (`ALLOW` only). When an action is flagged as ambiguous or medium-risk (`REVIEW`), autonomously queues a human-review request and prevents execution until an operator reviews the context.
 
 ### Layer 5: Audit & Security Layer (`src/audit_security/`)
 - **Components**: `blockchain.py`, `audit_service.py`, `security_analysis.py`, `security_service.py`, `honeypot.py`
-- **Technologies**: Cryptographic Hash-Chains, Python, OpenTelemetry trace formats
+- **Technologies**: SHA-256 application hash chain, SQLite, Python, and JSONL traces in an OpenTelemetry-compatible shape
 - **Role**: Records an immutable, verifiable application hash chain linking each decision to the previous block hash (`prev_hash`). Activates honeypot decoy traces upon detecting malicious or suspicious input patterns.
 
 ---

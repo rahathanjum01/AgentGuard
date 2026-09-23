@@ -36,7 +36,14 @@ The demo must cover trusted input, prompt injection, tampered amount, stale or d
 
 ## Latency requirement
 
-Moss is intended to provide sub-10ms semantic retrieval for the production path. The current local demo reports measured local lookup latency and labels it `LOCAL_DEMO`; it must not be described as a Moss benchmark until a real Moss path is configured.
+When configured, Moss downloads the selected index and performs steady-state semantic retrieval locally. Initial index loading is reported separately from query timing. `LOCAL_DEMO` is used only when Moss is not configured, and a configured Moss load/query failure returns `MOSS_ERROR` and fails closed. Moss benchmark claims require every measured request to report retrieval mode `MOSS`.
+
+## Moss retrieval requirements
+
+- The configured index name, such as `agentguard-context-v2`, must be explicit in deployment secrets.
+- Retrieval for a document identifier must filter Moss metadata on the exact `doc_hash`; semantic similarity alone must not authorize another document.
+- If a cloud index cannot be decoded by the SDK, the operator creates a newly named index from the committed corpus. Existing cloud indexes are not overwritten or deleted by the app.
+- A `REVIEW` context creates a human-review request for non-payment actions and blocks payment actions.
 
 ## Non-goals for the sprint
 

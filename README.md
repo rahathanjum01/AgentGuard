@@ -71,12 +71,12 @@ AgentGuard is structured into 5 architectural layers matching `architecture.pdf`
 
 ## Moss integration
 
-Moss integration is implemented in `src/moss_client.py` using the official Python SDK.
+Moss integration is implemented in `src/retrieval/moss_client.py` using the official Python SDK.
 
 The adapter:
 
-- Loads the `agentguard-context` index
-- Queries Moss with `MossClient` and `QueryOptions(top_k=1)`
+- Loads the configured index (the deployed demo uses `agentguard-context-v2`)
+- Queries Moss with `MossClient` and `QueryOptions(top_k=1)` plus an exact `doc_hash` metadata filter, so a semantically similar record cannot authorize a different document
 - Maps Moss score and metadata into AgentGuard trust evidence
 - Reports successful retrieval as `MOSS`
 - Uses `LOCAL_DEMO` only when Moss is not configured
@@ -87,6 +87,7 @@ Configure these values only through Streamlit Cloud Secrets or local `.streamlit
 ```toml
 MOSS_PROJECT_ID = "your-project-id"
 MOSS_PROJECT_KEY = "your-project-key"
+MOSS_INDEX_NAME = "agentguard-context-v2"
 # Optional. Moss is enabled automatically when both credentials are present.
 # Set to "false" only to deliberately use LOCAL_DEMO.
 MOSS_ENABLED = "true"
@@ -111,7 +112,7 @@ Set `MOSS_INDEX_NAME = "agentguard-context-v2"` in Streamlit secrets (or the API
 
 If Moss reports that it cannot decode an existing index download, do not delete the index. Set `MOSS_INDEX_NAME` to a new value such as `agentguard-context-v2`, reboot the Streamlit app, and use the sidebar **Repair Moss index** control to explicitly create the new corpus index. It creates only the newly named index and leaves existing cloud data untouched.
 
-Moss activates automatically when credentials are present (unless `MOSS_ENABLED=false`). The process loads the selected index locally before querying it and caches up to 256 document-hash lookups. This means an index load failure is reported as `MOSS_ERROR` and blocks sensitive actions rather than being presented as a successful Moss result. Restart the app after changing credentials or index settings.
+Moss activates automatically when credentials are present (unless `MOSS_ENABLED=false`). The process downloads and loads the selected index locally before querying it and caches up to 256 document-hash lookups. Initial index loading is not a query-latency claim; steady-state queries run against the local Moss runtime. An index-load failure is reported as `MOSS_ERROR` and blocks sensitive actions rather than being presented as a successful Moss result. Restart the app after changing credentials or index settings.
 
 Before opening the app, verify the exact project and index without modifying cloud data:
 
@@ -191,7 +192,7 @@ Run the reproducible benchmark from the project root:
 python scripts/benchmark.py --iterations 100
 ```
 
-It reports retrieval and end-to-end p50/p95 separately and prints active retrieval modes. A run is a Moss benchmark only when every sample reports `MOSS`; otherwise the output explicitly says that it is not a Moss benchmark. Configure the Moss credentials above and populate the `agentguard-context` index before recording Moss results for the demo.
+It reports retrieval and end-to-end p50/p95 separately and prints active retrieval modes. A run is a Moss benchmark only when every sample reports `MOSS`; otherwise the output explicitly says that it is not a Moss benchmark. Configure the Moss credentials above and populate the configured index (for the deployed demo, `agentguard-context-v2`) before recording Moss results.
 
 When `MOSS_ENABLED=true`, the benchmark first performs one Moss preflight request. If it cannot retrieve through Moss, it stops before the full run to conserve cloud usage.
 
