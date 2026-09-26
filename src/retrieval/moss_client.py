@@ -70,18 +70,21 @@ def _get_index_name():
 async def _query_index(project_id, project_key, query, index_name):
     global _client, _loaded_client_settings
     settings = (project_id, project_key, index_name)
+    index_load_latency_ms = 0.0
     if _client is None or _loaded_client_settings != settings:
         _client = MossClient(project_id, project_key)
         _loaded_client_settings = None
     if _loaded_client_settings != settings:
         # The low-latency path runs against this locally loaded Moss index.
         # A load failure must fail closed, never be shown as a Moss success.
+        load_started = time.perf_counter_ns()
         await _client.load_index(index_name)
+        index_load_latency_ms = round((time.perf_counter_ns() - load_started) / 1_000_000, 4)
         _loaded_client_settings = settings
     # A document hash is an identity, not natural-language intent. Constrain
     # the semantic search to the matching metadata so a visually similar
     # trusted record can never authorize a different document.
-    return await _client.query(
+    results = await _client.query(
         index_name,
         f"Document hash {query}",
         QueryOptions(
@@ -93,6 +96,7 @@ async def _query_index(project_id, project_key, query, index_name):
             },
         ),
     )
+    return results, index_load_latency_ms
 
 
 def search_moss(doc_hash):
@@ -101,7 +105,19 @@ def search_moss(doc_hash):
     if _moss_failure:
         raise MossIntegrationError("Moss retrieval is disabled after an earlier failure; restart after fixing the index.")
     try:
-        return _search_moss_cached(doc_hash, project_id, project_key, _get_index_name())
+        cache_before = _search_moss_cached.cache_info()
+        call_started = time.perf_counter_ns()
+        result = _search_moss_cached(doc_hash, project_id, project_key, _get_index_name())
+        call_latency = round((time.perf_counter_ns() - call_started) / 1_000_000, 4)
+        cache_after = _search_moss_cached.cache_info()
+        if cache_after.hits > cache_before.hits:
+            return {
+                **result,
+                "latency": call_latency,
+                "index_load_latency_ms": 0.0,
+                "retrieval_cache_hit": True,
+            }
+        return result
     except MossIntegrationError as error:
         # Do not repeatedly call a broken or unavailable cloud index in a
         # batch evaluation. A restart is an explicit retry after remediation.
@@ -115,18 +131,22 @@ def search_moss(doc_hash):
 def _search_moss_cached(doc_hash, project_id, project_key, index_name):
     """Cache immutable document-hash retrieval after Moss is configured."""
     start = time.perf_counter_ns()
-
     try:
-        results = asyncio.run(_query_index(project_id, project_key, doc_hash, index_name))
+        results, index_load_latency_ms = asyncio.run(
+            _query_index(project_id, project_key, doc_hash, index_name)
+        )
     except Exception as error:
         raise MossIntegrationError from error
 
-    latency = round((time.perf_counter_ns() - start) / 1_000_000, 4)
+    elapsed_ms = round((time.perf_counter_ns() - start) / 1_000_000, 4)
+    query_latency_ms = max(round(elapsed_ms - index_load_latency_ms, 4), 0.0)
     if not results.docs:
         return {
             "found": False,
             "trust": 0.0,
-            "latency": latency,
+            "latency": query_latency_ms,
+            "index_load_latency_ms": index_load_latency_ms,
+            "retrieval_cache_hit": False,
             "doc": "NO MOSS MATCH",
             "status": "UNTRUSTED",
             "vendor": "UNKNOWN",
@@ -143,11 +163,18 @@ def _search_moss_cached(doc_hash, project_id, project_key, index_name):
     return {
         "found": True,
         "trust": trust,
-        "latency": latency,
+        "latency": query_latency_ms,
+        "index_load_latency_ms": index_load_latency_ms,
+        "retrieval_cache_hit": False,
         "doc": match.text,
         "status": str(metadata.get("status", "MATCHED")),
         "vendor": str(metadata.get("vendor", "UNKNOWN")),
         "retrieval_mode": "MOSS",
+        "evidence": {
+            key: str(value)
+            for key, value in metadata.items()
+            if key not in {"trust", "status", "vendor"}
+        },
     }
 
 

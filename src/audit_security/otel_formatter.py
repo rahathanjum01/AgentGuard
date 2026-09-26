@@ -3,6 +3,7 @@
 
 import uuid
 import time
+import re
 from datetime import datetime, timezone
 
 def to_otel_format(honeypot_event: dict) -> dict:
@@ -10,7 +11,12 @@ def to_otel_format(honeypot_event: dict) -> dict:
     Takes your EXISTING honeypot dict and returns OTel-compatible dict
     Does NOT modify the original event
     """
-    trace_id = format(uuid.uuid4().int & ((1 << 128)-1), '032x')
+    trace_ref = str(honeypot_event.get("trace_id", "")).removeprefix("TRACE-")
+    trace_id = (
+        trace_ref.zfill(32)
+        if re.fullmatch(r"[0-9a-fA-F]{1,32}", trace_ref)
+        else format(uuid.uuid4().int & ((1 << 128) - 1), "032x")
+    )
     span_id = format(uuid.uuid4().int & ((1 << 64)-1), '016x')
     
     return {
@@ -28,7 +34,8 @@ def to_otel_format(honeypot_event: dict) -> dict:
             "honeypot.severity": honeypot_event.get("severity", "high"),
             "honeypot.payload": str(honeypot_event.get("payload", ""))[:500],
             "honeypot.session_id": honeypot_event.get("session_id", str(uuid.uuid4())),
-            "security.event.type": "honeypot_trigger",
+            "honeypot.trace_id": honeypot_event.get("trace_id", ""),
+            "security.event.type": honeypot_event.get("event_type", "honeypot_trigger"),
             "http.client_ip": honeypot_event.get("ip", ""),
         },
         "events": [

@@ -92,7 +92,7 @@ def evaluate_policy(action: str, context: RetrievalResult) -> PolicyDecision:
             "BLOCK",
             "BLOCKED",
             "REAL-TIME GUARDRAIL TRIGGERED",
-            "Retrieved context is not in an approved status.",
+            "Retrieved context's trust or approval status is insufficient.",
             "INVALID_CONTEXT_STATUS",
             "red",
         )

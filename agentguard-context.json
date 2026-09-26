@@ -7,7 +7,14 @@
       "vendor": "HAL",
       "trust": 0.95,
       "status": "VERIFIED",
-      "allowed_action": "payment"
+      "allowed_action": "payment",
+      "invoice_id": "INV100",
+      "invoice_amount": "5000.00",
+      "approved_amount": "5000.00",
+      "purchase_order": "PO-HAL-100",
+      "bank_account_last4": "1122",
+      "paid": "false",
+      "valid_until": "2027-12-31"
     }
   },
   {
@@ -62,7 +69,8 @@
       "vendor": "UNKNOWN",
       "trust": 0.1,
       "status": "STALE",
-      "allowed_action": "none"
+      "allowed_action": "none",
+      "valid_until": "2025-12-31"
     }
   },
   {
@@ -108,5 +116,35 @@
       "status": "UNTRUSTED",
       "allowed_action": "none"
     }
+  },
+  {
+    "id": "invoice-hal-101",
+    "text": "Document hash safe_invoice_101. Invoice INV101 from HAL for $2750.00 matches purchase order PO-HAL-101 and is approved. Vendor bank ending 1122 is on file.",
+    "metadata": {"doc_hash": "safe_invoice_101", "vendor": "HAL", "trust": 0.96, "status": "VERIFIED", "allowed_action": "payment", "invoice_id": "INV101", "invoice_amount": "2750.00", "approved_amount": "2750.00", "purchase_order": "PO-HAL-101", "bank_account_last4": "1122", "paid": "false", "valid_until": "2027-12-31"}
+  },
+  {
+    "id": "invoice-safecorp-202",
+    "text": "Document hash safe_invoice_202. Invoice INV202 from SafeCorp for $840.50 is approved against PO-SC-202. Approval expires 2027-03-31. Vendor bank ending 8841 is on file.",
+    "metadata": {"doc_hash": "safe_invoice_202", "vendor": "SafeCorp", "trust": 0.94, "status": "VERIFIED", "allowed_action": "payment", "invoice_id": "INV202", "invoice_amount": "840.50", "approved_amount": "840.50", "purchase_order": "PO-SC-202", "approval_expiry": "2027-03-31", "bank_account_last4": "8841", "paid": "false", "valid_until": "2027-12-31"}
+  },
+  {
+    "id": "invoice-hal-amount-mismatch",
+    "text": "Document hash mismatch_amount_301. Invoice INV301 from HAL requests $5100.00, but purchase order PO-HAL-301 approves $5000.00. Hold for investigation.",
+    "metadata": {"doc_hash": "mismatch_amount_301", "vendor": "HAL", "trust": 0.35, "status": "CONFLICT", "allowed_action": "none", "invoice_id": "INV301", "invoice_amount": "5100.00", "approved_amount": "5000.00", "purchase_order": "PO-HAL-301", "paid": "false", "valid_until": "2027-12-31"}
+  },
+  {
+    "id": "invoice-safecorp-duplicate",
+    "text": "Document hash duplicate_invoice_401. Invoice INV401 from SafeCorp for $300.00 matches PO-SC-401 but is already marked paid. Do not pay again.",
+    "metadata": {"doc_hash": "duplicate_invoice_401", "vendor": "SafeCorp", "trust": 0.2, "status": "DUPLICATE", "allowed_action": "none", "invoice_id": "INV401", "invoice_amount": "300.00", "approved_amount": "300.00", "purchase_order": "PO-SC-401", "paid": "true", "valid_until": "2027-12-31"}
+  },
+  {
+    "id": "invoice-hal-bank-change",
+    "text": "Document hash bank_change_501. Invoice INV501 from HAL for $1250.00 is approved, but submitted bank account ending 7788 differs from verified vendor record ending 1122. Require review.",
+    "metadata": {"doc_hash": "bank_change_501", "vendor": "HAL", "trust": 0.42, "status": "CONFLICT", "allowed_action": "none", "invoice_id": "INV501", "invoice_amount": "1250.00", "approved_amount": "1250.00", "bank_account_last4": "7788", "verified_bank_account_last4": "1122", "paid": "false", "valid_until": "2027-12-31"}
+  },
+  {
+    "id": "invoice-newvendor-601",
+    "text": "Document hash new_vendor_601. Invoice INV601 from a first-time vendor requests $640.00. No approved vendor profile or purchase order is available; require human review.",
+    "metadata": {"doc_hash": "new_vendor_601", "vendor": "FirstTimeCo", "trust": 0.55, "status": "REVIEW", "allowed_action": "none", "invoice_id": "INV601", "invoice_amount": "640.00", "approved_amount": "", "paid": "false", "valid_until": "2027-12-31"}
   }
 ]

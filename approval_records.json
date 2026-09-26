@@ -1,0 +1,8 @@
+[
+  {"invoice_id": "INV100", "purchase_order": "PO-HAL-100", "vendor": "HAL", "approved_amount": "5000.00", "bank_account_last4": "1122", "approval_expiry": "2027-12-31", "paid": false},
+  {"invoice_id": "INV101", "purchase_order": "PO-HAL-101", "vendor": "HAL", "approved_amount": "2750.00", "bank_account_last4": "1122", "approval_expiry": "2027-12-31", "paid": false},
+  {"invoice_id": "INV202", "purchase_order": "PO-SC-202", "vendor": "SafeCorp", "approved_amount": "840.50", "bank_account_last4": "8841", "approval_expiry": "2027-03-31", "paid": false},
+  {"invoice_id": "INV301", "purchase_order": "PO-HAL-301", "vendor": "HAL", "approved_amount": "5000.00", "bank_account_last4": "1122", "approval_expiry": "2027-12-31", "paid": false},
+  {"invoice_id": "INV401", "purchase_order": "PO-SC-401", "vendor": "SafeCorp", "approved_amount": "300.00", "bank_account_last4": "8841", "approval_expiry": "2027-12-31", "paid": true},
+  {"invoice_id": "INV501", "purchase_order": "PO-HAL-501", "vendor": "HAL", "approved_amount": "1250.00", "bank_account_last4": "1122", "approval_expiry": "2027-12-31", "paid": false}
+]

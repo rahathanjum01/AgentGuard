@@ -1,18 +1,30 @@
+import hmac
+import os
 import time
 import pandas as pd
 import streamlit as st
 
 from src.agent import guarded_tool_call
 from src.audit_security.audit_service import get_audit_events, record_audit_event, verify_audit_chain
-from src.audit_security.honeypot import honeypot_trap
-from src.execution_review.execution_service import execute_tool
+from src.audit_security.feedback import get_decision_feedback, record_decision_feedback
+from src.audit_security.honeypot import honeypot_trap, read_decoy_record
+from src.execution_review.execution_service import execute_tool, get_sandbox_payments
 from src.execution_review.review_service import decide_and_execute_review, list_reviews
-from src.policy.evaluation_cases import EVALUATION_CASES
-from src.policy.evaluator import evaluate_batch
+from src.policy.evaluation_cases import (
+    EVALUATION_CASES,
+    POLICY_EVALUATION_CASES,
+    RETRIEVAL_EVALUATION_CASES,
+)
+from src.policy.evaluator import (
+    evaluate_batch,
+    evaluate_policy_batch,
+    evaluate_retrieval_batch,
+)
 from src.policy.moss_validator import runtime_guard
 from src.retrieval.moss_client import MossIntegrationError, initialize_moss_index, moss_configuration
+from src.retrieval.retrieval_service import retrieve_context
 
-st.set_page_config(page_title="AgentGuard - YC Zero Latency", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="AgentGuard - Runtime Guardrails", layout="wide", page_icon="🛡️")
 
 moss_config = moss_configuration()
 if moss_config["configured"]:
@@ -57,7 +69,7 @@ st.markdown(
     <div class="hero">
       <div class="eyebrow">YC Fall 2026 x Moss · The Zero Latency Builder Sprint</div>
       <h1>AgentGuard</h1>
-      <p>Runtime safety gateway for transaction-oriented AI agents. Validates context in sub-10ms with Moss, enforces fail-closed policies, provides human-in-the-loop review, and records cryptographic audit evidence.</p>
+      <p>Prototype runtime guard for transaction-oriented agents. Retrieves context through Moss when configured, applies explainable allow/block/review policies, writes allowed payments to a local sandbox, and records an application-level audit trail.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -67,7 +79,17 @@ test_cases = [
     (case["doc_hash"], case["name"], case["action"])
     for case in EVALUATION_CASES
 ]
+test_cases.extend([
+    ("safe_invoice_101", "Sample invoice: verified HAL INV101", "payment"),
+    ("safe_invoice_202", "Sample invoice: verified SafeCorp INV202", "payment"),
+    ("mismatch_amount_301", "Sample invoice: amount conflicts with PO", "payment"),
+    ("duplicate_invoice_401", "Sample invoice: already paid", "payment"),
+    ("bank_change_501", "Sample invoice: vendor bank details changed", "payment"),
+    ("new_vendor_601", "Sample invoice: first-time vendor", "payment"),
+])
 evaluation = evaluate_batch(EVALUATION_CASES, runtime_guard)
+retrieval_evaluation = evaluate_retrieval_batch(RETRIEVAL_EVALUATION_CASES, retrieve_context)
+policy_evaluation = evaluate_policy_batch(POLICY_EVALUATION_CASES)
 moss_runtime = moss_configuration()
 evaluation_modes = sorted({item["result"]["retrieval_mode"] for item in evaluation["results"]})
 if moss_runtime.get("error"):
@@ -103,12 +125,25 @@ def format_latency(latency_ms):
     return "<0.01 ms" if latency_ms < 0.01 else f"{latency_ms:.2f} ms"
 
 
-guard_tab, review_tab, arena_tab, evaluation_tab, audit_tab = st.tabs([
+def _review_auth_token():
+    token = os.getenv("AGENTGUARD_REVIEW_TOKEN")
+    if token:
+        return token
+    try:
+        return st.secrets["AGENTGUARD_REVIEW_TOKEN"]
+    except (KeyError, FileNotFoundError):
+        return None
+
+
+guard_tab, review_tab, arena_tab, evaluation_tab, audit_tab, sandbox_tab, honeypot_tab, feedback_tab = st.tabs([
     "🛡️ Guardrail",
     "📋 Human Review Queue",
-    "⚡ Zero-Latency Arena",
+    "⚡ Latency",
     "🧪 Evaluation",
     "⛓️ Audit Trail",
+    "🧪 Sandbox Payments",
+    "🪤 Honeypot Decoy",
+    "📝 Decision Feedback",
 ])
 
 # ==============================================================================
@@ -177,17 +212,50 @@ with guard_tab:
                 f"Policy: {result['policy_name']} {result['policy_version']} · "
                 f"Reason code: {result['reason_code']}"
             )
+            context_evidence = result.get("evidence", {})
+            approval_evidence = context_evidence.get("verified_approval") or {}
+            with st.expander("Context validation evidence"):
+                st.write(
+                    f"**Document identity:** {doc_hash_input} · **Retrieved status:** {result['status']} · "
+                    f"**Document validity:** {context_evidence.get('valid_until', 'not supplied')}"
+                )
+                if approval_evidence:
+                    st.write(
+                        f"**Matched approval:** {approval_evidence.get('purchase_order', 'n/a')} · "
+                        f"{approval_evidence.get('vendor', 'Unknown vendor')} · "
+                        f"approved {approval_evidence.get('approved_amount', 'n/a')}"
+                    )
+                    st.write(
+                        f"**Verified bank ending:** {approval_evidence.get('bank_account_last4', 'n/a')} · "
+                        f"**Paid:** {approval_evidence.get('paid', 'unknown')} · "
+                        f"**Approval expires:** {approval_evidence.get('approval_expiry', 'not set')}"
+                    )
+                else:
+                    st.warning("No independent approval record matched this invoice.")
+                st.write(f"**Document valid until:** {context_evidence.get('valid_until', 'not supplied')}")
+                if result.get("security_findings"):
+                    st.write("**Validation findings:** " + " · ".join(
+                        finding["code"] for finding in result["security_findings"]
+                    ))
             if result.get("security_findings"):
                 st.error("Content findings: " + " · ".join(
                     finding["code"] for finding in result["security_findings"]
                 ))
             if trap["activated"]:
                 st.warning(f"Honeypot trace activated: {trap['trace_id']}")
+                st.session_state["latest_honeypot_trace_id"] = trap["trace_id"]
+                if not trap.get("telemetry_recorded", False):
+                    st.error("The suspicious request was blocked, but the local trace file could not be written.")
             st.write(f"**Tool execution:** {'Executed' if agent_request['executed'] else 'Prevented'}")
             st.caption(
                 f"Execution service: {agent_request['execution']['status']} · "
                 f"Request: {agent_request['request_id']}"
             )
+            st.write(agent_request["execution"]["result"])
+            if agent_request["execution"].get("sandbox_record_id"):
+                st.success(f"Sandbox payment record: {agent_request['execution']['sandbox_record_id']}")
+            with st.expander("Latency trace by stage"):
+                st.json(agent_request.get("stage_latency_ms", {}))
             if agent_request["review_request"]:
                 st.warning(
                     f"📋 Human review queued: {agent_request['review_request']['review_id']} "
@@ -205,6 +273,16 @@ with guard_tab:
 # ==============================================================================
 with review_tab:
     st.markdown("#### 📋 Human-in-the-Loop Review Console")
+    reviewer_id = st.text_input("Reviewer ID", value="demo-operator", max_chars=120)
+    expected_review_token = _review_auth_token()
+    if expected_review_token:
+        supplied_review_token = st.text_input("Reviewer authentication token", type="password")
+        reviewer_authenticated = hmac.compare_digest(supplied_review_token, expected_review_token)
+        if not reviewer_authenticated:
+            st.warning("Enter the configured reviewer token to approve or reject requests.")
+    else:
+        reviewer_authenticated = True
+        st.warning("Demo mode: no reviewer token is configured, so reviewer IDs are labels only. Set AGENTGUARD_REVIEW_TOKEN to require authentication.")
     st.caption(
         "Ambiguous or medium-trust agent actions (70%–85% trust) require explicit human operator review. "
         "Tool execution remains prevented until approved."
@@ -271,97 +349,52 @@ with review_tab:
                     btn_c1, btn_c2, _ = st.columns([0.3, 0.3, 0.4])
                     with btn_c1:
                         if st.button("✅ Approve with Override", key=f"app_{req['review_id']}", type="primary"):
-                            decide_and_execute_review(req["review_id"], "APPROVED")
-                            st.success(f"{req['review_id']} APPROVED! Action executed and logged to audit ledger.")
-                            st.rerun()
+                            if not reviewer_authenticated:
+                                st.error("Reviewer authentication is required before approval.")
+                            else:
+                                decide_and_execute_review(req["review_id"], "APPROVED", reviewer_id)
+                                st.success(f"{req['review_id']} APPROVED! Action executed and logged to audit ledger.")
+                                st.rerun()
                     with btn_c2:
                         if st.button("❌ Reject & Block", key=f"rej_{req['review_id']}"):
-                            decide_and_execute_review(req["review_id"], "REJECTED")
-                            st.warning(f"{req['review_id']} REJECTED. Execution permanently prevented.")
-                            st.rerun()
+                            if not reviewer_authenticated:
+                                st.error("Reviewer authentication is required before rejection.")
+                            else:
+                                decide_and_execute_review(req["review_id"], "REJECTED", reviewer_id)
+                                st.warning(f"{req['review_id']} REJECTED. Execution permanently prevented.")
+                                st.rerun()
                 elif status == "APPROVED":
                     st.caption("✅ Approved by Human Operator · Tool Executed · Cryptographic Audit Ledger Block Recorded")
                 elif status == "REJECTED":
                     st.caption("❌ Rejected by Human Operator · Autonomous Execution Blocked")
 
 # ==============================================================================
-# TAB 3: ZERO-LATENCY ARENA (MOSS VS. ALTERNATIVES)
+# TAB 3: OBSERVED LATENCY
 # ==============================================================================
 with arena_tab:
-    st.markdown("#### ⚡ Zero-Latency Performance Arena")
-    st.caption("Why sub-10ms retrieval is a prerequisite for production AI agent safety.")
-
-    # 3-way Architecture Comparison Cards
-    card_col1, card_col2, card_col3 = st.columns(3)
-
-    with card_col1:
-        st.markdown(
-            """
-            <div class="arena-card">
-              <span class="status-badge badge-block">TRADITIONAL</span>
-              <h3 style="margin: 0.5rem 0 0.2rem;">LLM Guardrail</h3>
-              <p style="color: #7f8c8d; font-size: 0.85rem;">LlamaGuard 3 / GPT-4o Judge</p>
-              <h2 style="color: #e74c3c; margin: 0.8rem 0;">~1,450 ms</h2>
-              <ul style="font-size: 0.85rem; color: #555; padding-left: 1.2rem;">
-                <li>Pauses agent loop for 1.5s per action</li>
-                <li>High cost per tool invocation</li>
-                <li>Prone to network timeouts in agent loops</li>
-              </ul>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with card_col2:
-        st.markdown(
-            """
-            <div class="arena-card">
-              <span class="status-badge badge-review">STANDARD</span>
-              <h3 style="margin: 0.5rem 0 0.2rem;">Cloud Vector DB</h3>
-              <p style="color: #7f8c8d; font-size: 0.85rem;">Pinecone / Chroma (Remote WAN)</p>
-              <h2 style="color: #f39c12; margin: 0.8rem 0;">~180 ms</h2>
-              <ul style="font-size: 0.85rem; color: #555; padding-left: 1.2rem;">
-                <li>WAN network round-trip overhead</li>
-                <li>Variable latency under concurrent load</li>
-                <li>Requires external network hops</li>
-              </ul>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with card_col3:
-        st.markdown(
-            """
-            <div class="arena-card arena-highlight">
-              <span class="status-badge badge-allow">ZERO LATENCY</span>
-              <h3 style="margin: 0.5rem 0 0.2rem; color: #16a085;">AgentGuard + Moss</h3>
-              <p style="color: #16a085; font-size: 0.85rem;">Sub-10ms Semantic Search</p>
-              <h2 style="color: #16a085; margin: 0.8rem 0;">&lt; 5.0 ms</h2>
-              <ul style="font-size: 0.85rem; color: #203331; padding-left: 1.2rem;">
-                <li><strong>Zero perceptible delay</strong> in agent loops</li>
-                <li>Sub-millisecond policy engine (&lt;0.05ms)</li>
-                <li>Deterministic, fail-closed safety</li>
-              </ul>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("#### 📊 Comparative Latency Benchmark")
-
-    comparison_data = pd.DataFrame(
-        {
-            "Architecture": ["AgentGuard + Moss", "Cloud Vector DB (WAN)", "LLM Guardrail"],
-            "Latency (ms)": [4.2, 180.0, 1450.0],
-        }
-    ).set_index("Architecture")
-
-    st.bar_chart(comparison_data, color="#16a085")
+    st.markdown('#### Runtime latency measurements')
+    st.caption(
+        "Measurements below come from this app's current evaluation run. "
+        "They are not comparisons with other providers or production guarantees."
+    )
+    latency_col1, latency_col2, latency_col3 = st.columns(3)
+    latency_col1.metric("Retrieval mode(s)", ", ".join(evaluation_modes) or "UNKNOWN")
+    latency_col2.metric("Retrieval p50", format_latency(evaluation["retrieval_median_latency_ms"]))
+    latency_col3.metric("Guardrail p95", format_latency(evaluation["p95_latency_ms"]))
+    st.dataframe(
+        pd.DataFrame([
+            {"Stage": stage, "Median latency ms": value}
+            for stage, value in evaluation["stage_median_latency_ms"].items()
+        ]),
+        hide_index=True,
+        use_container_width=True,
+    )
+    if evaluation_modes == ["MOSS"]:
+        st.success("Every end-to-end evaluation sample retrieved through Moss.")
+    else:
+        st.info("This run is not Moss-only. Treat its timings as local/demo or mixed-mode results.")
 
     st.divider()
-
     # Live Benchmark Runner
     st.markdown("#### 🚀 Run Live Latency Benchmark")
     st.caption("Execute real-time batch checks to measure latency percentiles on this environment.")
@@ -379,11 +412,21 @@ with arena_tab:
         with bench_col2:
             with st.spinner(f"Running {iterations} iterations across evaluation cases..."):
                 latencies = []
+                stage_samples = {}
+                benchmark_modes = set()
                 for _ in range(iterations):
                     for case in EVALUATION_CASES:
                         t0 = time.perf_counter_ns()
-                        runtime_guard(case["doc_hash"], case["action"])
+                        benchmark_result = runtime_guard(
+                            case["doc_hash"],
+                            case["action"],
+                            case.get("context_text"),
+                            case.get("transaction"),
+                        )
                         latencies.append((time.perf_counter_ns() - t0) / 1_000_000)
+                        benchmark_modes.add(benchmark_result["retrieval_mode"])
+                        for stage, latency in benchmark_result.get("stage_latency_ms", {}).items():
+                            stage_samples.setdefault(stage, []).append(latency)
 
                 sorted_lat = sorted(latencies)
                 p50 = sorted_lat[int(len(sorted_lat) * 0.50)]
@@ -398,9 +441,19 @@ with arena_tab:
                 m4.metric("Samples", len(latencies))
 
                 st.success(
-                    f"⚡ **Benchmark Complete**: {len(latencies)} guardrail evaluations completed with **p50 of {format_latency(p50)}** and **p95 of {format_latency(p95)}**. "
-                    f"Agent safety check adds virtually zero overhead to the agent execution loop."
+                    f"**Benchmark complete:** {len(latencies)} measured requests · "
+                    f"p50 {format_latency(p50)} · p95 {format_latency(p95)} · "
+                    f"retrieval mode(s): {', '.join(sorted(benchmark_modes))}. "
+                    "These timings describe this run and environment only."
                 )
+                st.dataframe(pd.DataFrame([
+                    {
+                        "Stage": stage,
+                        "p50 ms": sorted(values)[int((len(values) - 1) * 0.50)],
+                        "p95 ms": sorted(values)[int((len(values) - 1) * 0.95)],
+                    }
+                    for stage, values in sorted(stage_samples.items())
+                ]), hide_index=True, use_container_width=True)
 
                 # Small line chart of sample latency distribution
                 sample_slice = latencies[:100]
@@ -423,7 +476,14 @@ with evaluation_tab:
         st.error(f"Moss diagnostic: {moss_runtime['error']}")
     st.caption(
         f"{evaluation['blocked']} blocked · {evaluation['false_blocks']} false blocks · "
+        f"{evaluation['false_allows']} false allows · {evaluation['unexpected_reviews']} unexpected reviews. "
         "A false allow is an unsafe case that was incorrectly allowed."
+    )
+    st.markdown("#### Median latency by stage (ms)")
+    st.dataframe(
+        pd.DataFrame([{"Stage": stage, "Median ms": value} for stage, value in evaluation["stage_median_latency_ms"].items()]),
+        hide_index=True,
+        use_container_width=True,
     )
     for item in evaluation["results"]:
         result = item["result"]
@@ -434,7 +494,9 @@ with evaluation_tab:
             f'<strong><span class="status-badge badge-{decision}">{decision.upper()}</span> '
             f'{status} · {item["category"]} · {item["name"]}</strong>'
             f'<p><code>{item["expected"]}</code> expected · '
-            f'<code>{item["actual"]}</code> returned · {format_latency(result["latency"])}</p>'
+            f'<code>{item["actual"]}</code> returned · '
+            f'guard {format_latency(item["latency_ms"])} · '
+            f'retrieval {format_latency(item["retrieval_latency_ms"])}</p>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -442,8 +504,39 @@ with evaluation_tab:
     for category, values in evaluation["category_results"].items():
         st.write(
             f"**{category}**: {values['passed']}/{values['total']} passed "
-            f"({values['accuracy'] * 100:.0f}%)"
+            f"({values['accuracy'] * 100:.0f}%) · {values['false_allows']} false allows · "
+            f"{values['false_blocks']} false blocks · {values['unexpected_reviews']} unexpected reviews"
         )
+    st.markdown("#### Expected vs returned decisions")
+    st.dataframe(pd.DataFrame(evaluation["confusion_matrix"]).T, use_container_width=True)
+
+    st.divider()
+    st.markdown("#### Stage 1: retrieval evidence checks")
+    ret1, ret2, ret3, ret4 = st.columns(4)
+    ret1.metric("Retrieval cases", retrieval_evaluation["total_cases"])
+    ret2.metric("Evidence matches", f"{retrieval_evaluation['passed']}/{retrieval_evaluation['total_cases']}")
+    ret3.metric("Retrieval p50", format_latency(retrieval_evaluation["median_latency_ms"]))
+    ret4.metric("Retrieval p95", format_latency(retrieval_evaluation["p95_latency_ms"]))
+    st.caption(f"Provider(s): {', '.join(retrieval_evaluation['retrieval_modes'])}")
+    st.dataframe(pd.DataFrame([
+        {
+            "Result": "PASS" if item["passed"] else "FAIL",
+            "Document": item["doc_hash"],
+            "Case": item["name"],
+            "Checks": ", ".join(f"{key}={'ok' if value else 'mismatch'}" for key, value in item["checks"].items()),
+            "Mode": item["retrieval_mode"],
+            "Cache hit": item["cache_hit"],
+            "Latency ms": item["latency_ms"],
+        }
+        for item in retrieval_evaluation["results"]
+    ]), hide_index=True, use_container_width=True)
+
+    st.markdown("#### Stage 2: policy-only checks")
+    pol1, pol2, pol3 = st.columns(3)
+    pol1.metric("Policy cases", policy_evaluation["total_cases"])
+    pol2.metric("Expected decisions", f"{policy_evaluation['passed']}/{policy_evaluation['total_cases']}")
+    pol3.metric("Policy mismatches", policy_evaluation["failed"])
+    st.dataframe(pd.DataFrame(policy_evaluation["results"]), hide_index=True, use_container_width=True)
 
 # ==============================================================================
 # TAB 5: AUDIT TRAIL
@@ -464,6 +557,61 @@ with audit_tab:
             else:
                 st.error("❌ Chain Tampering Detected!")
 
+with sandbox_tab:
+    st.markdown("#### Fabricated sandbox payment ledger")
+    st.caption("These are local demo records only. No bank, payment processor, or external tool is contacted.")
+    sandbox_payments = get_sandbox_payments()
+    st.metric("Recorded sandbox payments", len(sandbox_payments))
+    if sandbox_payments:
+        st.dataframe(pd.DataFrame(sandbox_payments), hide_index=True, use_container_width=True)
+    else:
+        st.info("No sandbox payment records yet. Run an allowed payment scenario in the Guardrail tab.")
+
+with honeypot_tab:
+    st.markdown("#### Read-only decoy record")
+    st.caption("This fake record is available only after a suspicious request creates a trace. Opening it records a decoy-access event; it cannot trigger a payment or tool action.")
+    decoy_trace = st.text_input(
+        "Suspicious request trace ID",
+        value=st.session_state.get("latest_honeypot_trace_id", ""),
+        key="honeypot_trace_input",
+    )
+    if st.button("Open fabricated decoy", key="open_honeypot_decoy"):
+        try:
+            st.session_state["opened_honeypot_decoy"] = read_decoy_record(decoy_trace, "streamlit_read")
+            except (ValueError, RuntimeError) as error:
+                st.error(str(error))
+    if st.session_state.get("opened_honeypot_decoy"):
+        st.json(st.session_state["opened_honeypot_decoy"])
+
+with feedback_tab:
+    st.markdown("#### Reviewer feedback for policy evaluation")
+    st.caption("Labels are saved for later dataset review. Feedback does not automatically alter policy or evaluation outcomes.")
+    feedback_audit = get_audit_events()
+    if feedback_audit:
+        audit_options = {
+            f"Block #{item['block_no']} · {item['decision']} · {item['action']} · {item['reason_code']}": item
+            for item in reversed(feedback_audit)
+        }
+        with st.form("decision_feedback_form"):
+            selected_audit_label = st.selectbox("Decision to review", list(audit_options))
+            feedback_reviewer = st.text_input("Reviewer ID", value="demo-operator", max_chars=120)
+            feedback_label = st.selectbox("Was the decision correct?", ["CORRECT", "INCORRECT"])
+            feedback_reason = st.text_area("Reason or correction", max_chars=1000)
+            submit_feedback = st.form_submit_button("Save feedback")
+        if submit_feedback:
+            selected_block = audit_options[selected_audit_label]
+            saved_feedback = record_decision_feedback(
+                selected_block["block_no"], feedback_label, feedback_reviewer, feedback_reason
+            )
+            st.success(f"Saved {saved_feedback['feedback_id']} for audit block #{saved_feedback['block_no']}.")
+            st.rerun()
+    else:
+        st.info("Run a guardrail request before labeling a decision.")
+    saved_feedback_rows = get_decision_feedback()
+    if saved_feedback_rows:
+        st.dataframe(pd.DataFrame(saved_feedback_rows), hide_index=True, use_container_width=True)
+
+with audit_tab:
     ledger = get_audit_events()
     if ledger:
         for block in reversed(ledger[-8:]):
@@ -475,7 +623,10 @@ with audit_tab:
                 f'Block #{block["block_no"]}</strong>'
                 f'<p><code>{block["timestamp"]}</code> · Hash: <code>{block.get("block_hash", "N/A")}</code> · '
                 f'Prev: <code>{block.get("prev_hash", "0000000000000000")}</code> · '
-                f'Doc: <code>{block["doc_hash"]}</code> · Action: <code>{block["action"]}</code></p>'
+                f'Doc: <code>{block["doc_hash"]}</code> · Action: <code>{block["action"]}</code> · '
+                f'Security trace: <code>{block.get("security_trace_id") or "none"}</code> · '
+                f'Sandbox record: <code>{block.get("sandbox_record_id") or "none"}</code> · '
+                f'Request: <code>{block.get("request_id") or "n/a"}</code></p>'
                 f'<p style="font-size: 0.8rem; color: #7f8c8d;">Reason: {block.get("reason_code", "N/A")}</p>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -484,4 +635,4 @@ with audit_tab:
         st.info("No decisions have been recorded in this session yet.")
 
 st.divider()
-st.caption("AgentGuard · YC Fall 2026 x Moss Zero Latency Builder Sprint · Runtime Guardrails, HITL Review, and Cryptographic Audit")
+st.caption("AgentGuard · YC Fall 2026 x Moss Builder Sprint · Runtime Guardrails, HITL Review, and application hash-chain audit")

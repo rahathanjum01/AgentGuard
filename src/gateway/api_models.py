@@ -27,6 +27,16 @@ class ReviewDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["APPROVED", "REJECTED"]
+    reviewer_id: str = Field(default="demo-operator", min_length=1, max_length=120)
+
+
+class DecisionFeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    block_no: int = Field(ge=1)
+    label: Literal["CORRECT", "INCORRECT"]
+    reviewer_id: str = Field(min_length=1, max_length=120)
+    reason: str = Field(default="", max_length=1000)
 
 
 class HealthResponse(BaseModel):

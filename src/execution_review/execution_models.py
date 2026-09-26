@@ -15,3 +15,4 @@ class ExecutionResult(BaseModel):
     executed: bool
     status: ExecutionStatus
     result: str
+    sandbox_record_id: str | None = None

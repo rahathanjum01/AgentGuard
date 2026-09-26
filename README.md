@@ -9,7 +9,7 @@ AgentGuard is a runtime safety gateway for transaction-oriented AI agents. It va
 - Blocks risky actions like payment or file deletion when trust is too low
 - Detects known attack patterns such as injection, tampered amounts, and stale reuse
 - Inspects untrusted document text and transaction fields before execution (prompt injection, amount mismatch, duplicate invoice, expired approval)
-- Triggers a honeypot trap to mislead bad actors
+- Offers a read-only fabricated decoy record after selected suspicious requests and logs decoy access
 - Stores an application-level hash-chain audit ledger for evidence and traceability
 - Shows everything in a Streamlit dashboard
 
@@ -122,13 +122,17 @@ Before opening the app, verify the exact project and index without modifying clo
 
 The application reads these settings only at runtime. Credentials are never returned in decision payloads or audit entries.
 
-The `REVIEW` path creates a pending in-memory human-review request and prevents tool execution. The review queue is intentionally a prototype service boundary; production use requires durable storage and authenticated reviewer actions.
+The `REVIEW` path creates a pending SQLite-backed review request and prevents tool execution. API review decisions can require a bearer token through `AGENTGUARD_REVIEW_TOKEN`; without that setting, reviewer IDs are demo labels rather than authenticated identities. The Streamlit review console is a local demo surface.
 
 The audit ledger is an application-level hash chain, not an external blockchain. This is a prototype for product evaluation and hackathon demonstration, not a production security system.
 
-The demo models an agent tool call: a request is evaluated before the tool is marked as executed. `ALLOW` executes the request; `BLOCK` and `REVIEW` prevent autonomous execution.
+The demo checks a request before the tool boundary. An allowed payment writes one idempotent, fabricated payment record to `sandbox_payments.db`, using the independent approval fixture. Other allowed tool actions return simulated results. No bank, processor, email, file, or contract service is called; `BLOCK` and `REVIEW` prevent execution.
 
-The Evaluation tab runs 12 deterministic cases across trusted actions, ambiguous context, prompt injection, tampering, stale context, unknown vendors, and unauthorized actions. It reports per-case results, category accuracy, median latency, and p95 latency.
+The Evaluation tab separates retrieval evidence checks, policy-only checks, and end-to-end trusted, adversarial, and benign-lookalike cases. It reports per-case outcomes, category accuracy, false allows, false blocks, unexpected reviews, and latency by stage. Cases that miss their expected decision remain visible as failures.
+
+The audit ledger stores a full SHA-256 application hash chain. It links request IDs, sandbox records, review outcomes, security trace IDs, and stage timings. This is tamper-evident local application storage, not an external blockchain or protection against an operator who can rewrite the entire database.
+
+Selected blocked suspicious requests create a trace and expose a read-only fabricated decoy through the **Honeypot Decoy** tab or `GET /v1/honeypot/decoys/{trace_id}`. Viewing the decoy appends an OpenTelemetry-shaped event to the ignored local `honeypot_events.jsonl`; it cannot execute tools. The **Decision Feedback** tab records reviewer labels for audit blocks; labels do not automatically change policy.
 
 ## Run tests
 
@@ -166,6 +170,8 @@ curl -X POST http://127.0.0.1:8000/v1/guard/tool-request \
 
 The API returns `ALLOW`, `BLOCK`, or `REVIEW` in the response body. Only `ALLOW` can execute a tool. Invalid requests return `422`. The Streamlit app and FastAPI gateway are separate runtime surfaces; deploying the Streamlit demo does not automatically deploy the API.
 
+Configure reviewer authentication for API review decisions and feedback by setting `AGENTGUARD_REVIEW_TOKEN` in the API environment. Send it as `Authorization: Bearer <token>`. If unset, those prototype endpoints accept the supplied reviewer ID as an unauthenticated demo label.
+
 ### Content-security request example
 
 The guard accepts optional untrusted context and transaction verification fields. These are inspected independently of the document identifier; matching amounts are required when both are supplied.
@@ -192,11 +198,13 @@ Run the reproducible benchmark from the project root:
 python scripts/benchmark.py --iterations 100
 ```
 
-It reports retrieval and end-to-end p50/p95 separately and prints active retrieval modes. A run is a Moss benchmark only when every sample reports `MOSS`; otherwise the output explicitly says that it is not a Moss benchmark. Configure the Moss credentials above and populate the configured index (for the deployed demo, `agentguard-context-v2`) before recording Moss results.
+It reports Moss index-load and query time, guardrail stages, end-to-end p50/p95, and active retrieval modes. A run is a Moss benchmark only when every sample reports `MOSS`; otherwise the output explicitly says that it is not a Moss benchmark. Configure the Moss credentials above and populate the configured index (for the deployed demo, `agentguard-context-v2`) before recording Moss results.
 
 When Moss credentials are configured (and `MOSS_ENABLED` is not explicitly `false`), the benchmark first performs one Moss preflight request. If it cannot retrieve through Moss, it stops before the full run to conserve cloud usage.
 
-The gateway connects to retrieval through `src/retrieval_service.py`. That service selects the Moss adapter when configured, uses the `LOCAL_DEMO` provider only when Moss is not configured, normalizes the result, and fails closed with `MOSS_ERROR` when a configured provider fails. Retrieval evidence is returned separately from the policy decision; retrieval alone never authorizes a tool.
+The gateway connects to retrieval through `src/retrieval/retrieval_service.py`. That service selects Moss when configured, uses `LOCAL_DEMO` only when Moss is not configured, joins retrieved invoice IDs to the separate approval fixture, and fails closed with `MOSS_ERROR` when a configured provider fails. Retrieval and policy quality have separate evaluation suites; retrieval alone never authorizes a tool.
+
+For the fabricated AP demo, invoice documents live in `agentguard-context.json` and independent purchase-order/vendor approval facts live in `approval_records.json`. Every retrieved payment context is checked for matching document identity, validity date, and a matching approval record; invoice amount, vendor, bank details, paid state, and approval expiry are compared with that separate fixture. A caller-provided `approved_amount` is not treated as the trusted approval value. These files are demonstration fixtures, not a connection to a real finance system.
 
 ## Policy evaluation
 
@@ -214,10 +222,20 @@ The API returns the policy name, version, reason code, human-readable reason, an
 
 The end-to-end path is shared by the API and Streamlit UI:
 
-- `ALLOW` enters the Python execution service and returns a simulated execution result. No external payment, email, file, or contract tool is called by this prototype.
-- `REVIEW` creates one pending in-memory review request and remains non-executable.
-- `BLOCK` prevents execution. Suspicious identifiers such as injection, tampering, stale, or fake markers can create a sanitized demo security trace.
-- Every request is recorded by the application hash-chain audit service, including policy provenance, execution status, review id, and security trace id when present.
+- `ALLOW` reaches the Python execution service. Payments create a local, idempotent sandbox ledger record; other actions are simulated.
+- `REVIEW` creates a durable pending SQLite review request and remains non-executable until resolved.
+- `BLOCK` prevents execution. Selected suspicious requests create a trace; reading the associated fabricated decoy logs an access event.
+- Every request is recorded by the application hash-chain audit service, including policy provenance, execution status, review ID, sandbox payment ID, stage latency, and security trace ID when present.
 - `GET /v1/reviews`, `GET /v1/audit`, and `GET /v1/audit/verify` expose read-only inspection for the demo.
+- `GET /v1/feedback` and `POST /v1/feedback` expose the reviewer feedback loop; `GET /v1/honeypot/decoys/{trace_id}` returns only fabricated read-only data.
 
 The reference architecture supplied for the hackathon is documented as a production target. PostgreSQL, OPA, LangGraph, OpenTelemetry, React/Node.js, and Rust are not claimed as current runtime dependencies.
+
+## Final-round walkthrough
+
+1. In Guardrail, select **Sample invoice: verified HAL INV101** and run a payment. Show the independent approval, `ALLOW`, and sandbox payment record ID.
+2. Select **Sample invoice: amount conflicts with PO**. Show the block and the invoice/approval amount difference.
+3. Select **Sample invoice: first-time vendor**. Show payment blocked because there is no matched approval.
+4. Open Evaluation and explain the retrieval, policy-only, and end-to-end results, including any remaining failures.
+5. If a suspicious case creates a trace, open Honeypot Decoy, read the fabricated record, then show its trace ID in the audit entry. No real payment was attempted.
+6. Open Decision Feedback to label an audit outcome. Feedback is saved for later evaluation review and does not silently change policy.

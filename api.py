@@ -1,9 +1,20 @@
-from fastapi import FastAPI
+import hmac
+import os
+
+from fastapi import FastAPI, Header, HTTPException
 
 from src.agent import guarded_tool_call
-from src.api_models import GuardResponse, HealthResponse, ReviewDecisionRequest, ToolRequest
+from src.api_models import (
+    DecisionFeedbackRequest,
+    GuardResponse,
+    HealthResponse,
+    ReviewDecisionRequest,
+    ToolRequest,
+)
+from src.audit_security.feedback import get_decision_feedback, record_decision_feedback
 from src.audit_service import get_audit_events, record_audit_event, verify_audit_chain
 from src.honeypot import honeypot_trap
+from src.honeypot import read_decoy_record
 from src.retrieval_models import RetrievalResult
 from src.review_service import decide_review, get_review, list_reviews
 
@@ -70,6 +81,14 @@ def reviews():
     return {"reviews": list_reviews()}
 
 
+@app.get("/v1/honeypot/decoys/{trace_id}")
+def honeypot_decoy(trace_id: str):
+    try:
+        return {"decoy": read_decoy_record(trace_id, "api_read")}
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @app.get("/v1/reviews/{review_id}")
 def review(review_id: str):
     review_request = get_review(review_id)
@@ -79,8 +98,13 @@ def review(review_id: str):
 
 
 @app.post("/v1/reviews/{review_id}/decision")
-def review_decision(review_id: str, request: ReviewDecisionRequest):
-    review_request = decide_review(review_id, request.decision)
+def review_decision(
+    review_id: str,
+    request: ReviewDecisionRequest,
+    authorization: str | None = Header(default=None),
+):
+    _require_reviewer_auth(authorization)
+    review_request = decide_review(review_id, request.decision, request.reviewer_id)
     if review_request is None:
         return {"review": None, "updated": False}
     return {
@@ -88,6 +112,32 @@ def review_decision(review_id: str, request: ReviewDecisionRequest):
         "updated": True,
         "execution_started": False,
     }
+
+
+def _require_reviewer_auth(authorization):
+    expected_token = os.getenv("AGENTGUARD_REVIEW_TOKEN")
+    if expected_token:
+        supplied_token = authorization.removeprefix("Bearer ") if authorization else ""
+        if not hmac.compare_digest(supplied_token, expected_token):
+            raise HTTPException(status_code=401, detail="Reviewer authentication required.")
+
+
+@app.get("/v1/feedback")
+def decision_feedback():
+    return {"feedback": get_decision_feedback()}
+
+
+@app.post("/v1/feedback")
+def submit_decision_feedback(
+    request: DecisionFeedbackRequest,
+    authorization: str | None = Header(default=None),
+):
+    _require_reviewer_auth(authorization)
+    if request.block_no not in {item["block_no"] for item in get_audit_events()}:
+        raise HTTPException(status_code=404, detail="Audit decision not found.")
+    return {"feedback": record_decision_feedback(
+        request.block_no, request.label, request.reviewer_id, request.reason
+    )}
 
 
 @app.get("/v1/audit")

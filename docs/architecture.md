@@ -2,7 +2,7 @@
 
 ## Product Goal
 
-AgentGuard is a runtime safety gateway for transaction-oriented AI agents. It evaluates an agent tool request against retrieved context before execution, returning an explainable allow, block, or review decision and recording cryptographic audit evidence.
+AgentGuard is a prototype runtime safety gateway for transaction-oriented AI agents. It evaluates an agent tool request against retrieved context before a simulated tool call, returns an explainable allow, block, or review decision, and records application-level audit evidence.
 
 ## System Architecture: The 5 Core Layers
 
@@ -36,6 +36,7 @@ flowchart TD
     subgraph L5["Layer 5: Audit & Security Layer (src/audit_security)"]
         LEDGER[("Hash-Chain Audit Ledger")]
         HONEY["Honeypot Trace Service"]
+        DECOY["Read-only fabricated decoy"]
     end
 
     GW --> APIM
@@ -51,6 +52,7 @@ flowchart TD
     POLICY -->|ALLOW| EXEC
     POLICY -->|REVIEW| REVIEW
     POLICY -->|BLOCK| HONEY
+    HONEY -->|suspicious trace| DECOY
     EXEC --> LEDGER
     REVIEW --> LEDGER
     HONEY --> LEDGER
@@ -67,6 +69,7 @@ flowchart TD
 - **Components**: `retrieval_service.py`, `moss_client.py`, `local_retrieval.py`, `retrieval_models.py`
 - **Technologies**: Moss Python SDK with its local Rust runtime, Python, and SQLite for the explicit local demo provider
 - **Role**: Loads the configured Moss cloud index into the local runtime, then queries it with an exact `doc_hash` metadata filter. `LOCAL_DEMO` is selected only when Moss is unconfigured; a configured-provider failure becomes `MOSS_ERROR` and is blocked by policy.
+- **Demo evidence join**: Retrieved invoice metadata is joined by invoice ID to the separate fabricated `approval_records.json` fixture before content checks. A caller-provided approval amount is not used as the trusted approval fact.
 
 ### Layer 3: Policy Evaluation Layer (`src/policy/`)
 - **Components**: `policy_engine.py`, `policy_models.py`, `context_normalizer.py`, `moss_validator.py`, `evaluator.py`, `evaluation_cases.py`
@@ -75,13 +78,13 @@ flowchart TD
 
 ### Layer 4: Execution & Review Layer (`src/execution_review/`)
 - **Components**: `execution_service.py`, `execution_models.py`, `review_service.py`, `review.py`
-- **Technologies**: Python and Streamlit HITL UI
-- **Role**: Executes approved actions (`ALLOW` only). When an action is flagged as ambiguous or medium-risk (`REVIEW`), autonomously queues a human-review request and prevents execution until an operator reviews the context.
+- **Technologies**: Python, SQLite sandbox ledger, and Streamlit HITL UI
+- **Role**: Writes an idempotent fabricated sandbox payment record for approved payments; other allowed actions remain simulated. `REVIEW` is stored in a durable SQLite queue and cannot execute before review.
 
 ### Layer 5: Audit & Security Layer (`src/audit_security/`)
 - **Components**: `blockchain.py`, `audit_service.py`, `security_analysis.py`, `security_service.py`, `honeypot.py`
-- **Technologies**: SHA-256 application hash chain, SQLite, Python, and JSONL traces in an OpenTelemetry-compatible shape
-- **Role**: Records an immutable, verifiable application hash chain linking each decision to the previous block hash (`prev_hash`). Activates honeypot decoy traces upon detecting malicious or suspicious input patterns.
+- **Technologies**: Full SHA-256 application hash chain, SQLite, Python, and local JSONL security traces in an OpenTelemetry-compatible shape
+- **Role**: Records request, sandbox, review, latency, and security trace references in a local hash chain. Selected suspicious blocks expose a fabricated read-only decoy whose access is logged. This is not an external blockchain or production intrusion monitoring system.
 
 ---
 

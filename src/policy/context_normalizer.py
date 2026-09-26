@@ -6,6 +6,7 @@ DEFAULT_CONTEXT = {
     "status": "UNTRUSTED",
     "vendor": "UNKNOWN",
     "retrieval_mode": "UNKNOWN",
+    "evidence": {},
 }
 
 
@@ -20,4 +21,6 @@ def normalize_context(raw_context):
     context["trust"] = min(max(trust, 0.0), 1.0)
     context["latency"] = max(float(context["latency"] or 0.0), 0.0)
     context["found"] = bool(context["found"])
+    if not isinstance(context["evidence"], dict):
+        context["evidence"] = {}
     return context

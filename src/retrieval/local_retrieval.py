@@ -1,6 +1,8 @@
 import time
 import sqlite3
 import os
+import json
+from pathlib import Path
 
 DB_PATH = "local_fallback.db"
 
@@ -12,20 +14,38 @@ def init_db():
             doc_hash TEXT PRIMARY KEY,
             name TEXT,
             trust REAL,
-            vendor TEXT
+            vendor TEXT,
+            status TEXT NOT NULL DEFAULT 'VERIFIED',
+            evidence TEXT NOT NULL DEFAULT '{}'
         )
     """)
+    columns = {row[1] for row in cursor.execute("PRAGMA table_info(trusted_docs)")}
+    if "status" not in columns:
+        cursor.execute("ALTER TABLE trusted_docs ADD COLUMN status TEXT NOT NULL DEFAULT 'VERIFIED'")
+    if "evidence" not in columns:
+        cursor.execute("ALTER TABLE trusted_docs ADD COLUMN evidence TEXT NOT NULL DEFAULT '{}'")
     
-    # Check if empty
-    cursor.execute("SELECT COUNT(*) FROM trusted_docs")
-    if cursor.fetchone()[0] == 0:
-        default_docs = [
-            ("a1b2c3d4e5f6g7h8", "Invoice INV100 - HAL Vendor ABC - $5000", 0.95, "HAL"),
-            ("b2c3d4e5f6g7h8i9", "PO #PO2024 - Verified Supplier", 0.93, "SafeCorp"),
-            ("d4e5f6g7h8i9j0k1", "Invoice INV104 - New Vendor - $1200", 0.82, "NewVendor"),
-        ]
-        cursor.executemany("INSERT INTO trusted_docs VALUES (?, ?, ?, ?)", default_docs)
-        conn.commit()
+    # Seed/update the local demo fixture from the same committed corpus used by Moss.
+    corpus_path = Path(__file__).resolve().parents[2] / "agentguard-context.json"
+    records = json.loads(corpus_path.read_text(encoding="utf-8"))
+    demo_docs = [
+        (
+            record["metadata"]["doc_hash"],
+            record["text"],
+            float(record["metadata"]["trust"]),
+            record["metadata"].get("vendor", "UNKNOWN"),
+            record["metadata"].get("status", "UNTRUSTED"),
+            json.dumps(record["metadata"], sort_keys=True),
+        )
+        for record in records
+    ]
+    cursor.executemany(
+        "INSERT INTO trusted_docs (doc_hash, name, trust, vendor, status, evidence) VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(doc_hash) DO UPDATE SET name=excluded.name, trust=excluded.trust, "
+        "vendor=excluded.vendor, status=excluded.status, evidence=excluded.evidence",
+        demo_docs,
+    )
+    conn.commit()
     conn.close()
 
 # Initialize on module load
@@ -34,11 +54,14 @@ init_db()
 def _get_doc(doc_hash):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT name, trust, vendor FROM trusted_docs WHERE doc_hash = ?", (doc_hash,))
+    cursor.execute("SELECT name, trust, vendor, status, evidence FROM trusted_docs WHERE doc_hash = ?", (doc_hash,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"name": row[0], "trust": row[1], "vendor": row[2]}
+        return {
+            "name": row[0], "trust": row[1], "vendor": row[2], "status": row[3],
+            "evidence": json.loads(row[4]),
+        }
     return None
 
 def local_demo_search(doc_hash):
@@ -51,9 +74,10 @@ def local_demo_search(doc_hash):
             "trust": data["trust"],
             "latency": latency,
             "doc": data["name"],
-            "status": "VERIFIED",
+            "status": data["status"],
             "vendor": data["vendor"],
             "retrieval_mode": "LOCAL_DEMO",
+            "evidence": data["evidence"],
         }
     return {
         "found": False,
