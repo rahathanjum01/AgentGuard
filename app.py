@@ -578,8 +578,8 @@ with honeypot_tab:
     if st.button("Open fabricated decoy", key="open_honeypot_decoy"):
         try:
             st.session_state["opened_honeypot_decoy"] = read_decoy_record(decoy_trace, "streamlit_read")
-            except (ValueError, RuntimeError) as error:
-                st.error(str(error))
+        except (ValueError, RuntimeError) as error:
+            st.error(str(error))
     if st.session_state.get("opened_honeypot_decoy"):
         st.json(st.session_state["opened_honeypot_decoy"])
 

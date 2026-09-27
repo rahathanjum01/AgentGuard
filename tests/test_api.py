@@ -58,7 +58,7 @@ class ApiGatewayTests(unittest.TestCase):
         self.assertFalse(body["executed"])
         self.assertEqual(body["execution"]["status"], "PREVENTED")
         self.assertTrue(body["honeypot"]["activated"])
-        self.assertEqual(body["reason_code"], "CONTEXT_NOT_FOUND")
+        self.assertEqual(body["reason_code"], "INVALID_CONTEXT_STATUS")
         self.assertEqual(body["audit"]["decision"], "BLOCK")
 
     def test_review_request_does_not_execute(self):

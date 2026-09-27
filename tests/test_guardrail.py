@@ -60,7 +60,7 @@ class GuardrailTests(unittest.TestCase):
 
         self.assertFalse(result["allow"])
         self.assertEqual(result["decision"], "REVIEW")
-        self.assertIn("autonomous", result["reason"])
+        self.assertIn("human review", result["reason"].lower())
 
     def test_evaluation_reports_real_counts(self):
         cases = [

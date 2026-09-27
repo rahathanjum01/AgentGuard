@@ -10,9 +10,11 @@ class ExecutionReviewTests(unittest.TestCase):
         REVIEW_QUEUE.clear()
 
     def test_only_allow_executes(self):
-        allowed = execute_tool("payment", "REQ-1", {"decision": "ALLOW"})
-        blocked = execute_tool("payment", "REQ-2", {"decision": "BLOCK"})
-        review = execute_tool("payment", "REQ-3", {"decision": "REVIEW"})
+        # A non-payment action isolates the decision gate; payments additionally
+        # require verified approval evidence before they can create a sandbox row.
+        allowed = execute_tool("read_email", "REQ-1", {"decision": "ALLOW"})
+        blocked = execute_tool("read_email", "REQ-2", {"decision": "BLOCK"})
+        review = execute_tool("read_email", "REQ-3", {"decision": "REVIEW"})
 
         self.assertTrue(allowed.executed)
         self.assertFalse(blocked.executed)

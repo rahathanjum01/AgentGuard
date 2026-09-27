@@ -68,7 +68,7 @@ class ArchitectureLayersTests(unittest.TestCase):
         self.assertTrue(decision.allow)
 
     def test_layer_4_execution_review_exports(self):
-        res = execute_tool("payment", "REQ-001", {"decision": "ALLOW"})
+        res = execute_tool("read_email", "REQ-001", {"decision": "ALLOW"})
         self.assertTrue(res.executed)
         self.assertEqual(res.status, "EXECUTED")
 
