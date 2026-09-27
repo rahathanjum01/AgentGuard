@@ -21,7 +21,12 @@ from src.policy.evaluator import (
     evaluate_retrieval_batch,
 )
 from src.policy.moss_validator import runtime_guard
-from src.retrieval.moss_client import MossIntegrationError, initialize_moss_index, moss_configuration
+from src.retrieval.moss_client import (
+    MossIntegrationError,
+    initialize_moss_index,
+    moss_configuration,
+    streamlit_secrets_available,
+)
 from src.retrieval.retrieval_service import retrieve_context
 
 st.set_page_config(page_title="AgentGuard - Runtime Guardrails", layout="wide", page_icon="🛡️")
@@ -129,6 +134,8 @@ def _review_auth_token():
     token = os.getenv("AGENTGUARD_REVIEW_TOKEN")
     if token:
         return token
+    if not streamlit_secrets_available():
+        return None
     try:
         return st.secrets["AGENTGUARD_REVIEW_TOKEN"]
     except (KeyError, FileNotFoundError):

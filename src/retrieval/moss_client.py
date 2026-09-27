@@ -36,12 +36,40 @@ def _get_setting(name):
     value = os.getenv(name)
     if value:
         return value
-    if st is not None:
+    if st is not None and streamlit_secrets_available():
         try:
             return st.secrets[name]
         except (KeyError, FileNotFoundError):
             pass
     raise MossNotConfigured from None
+
+
+def streamlit_secrets_available():
+    """Avoid asking Streamlit to load secrets when no secrets file exists.
+
+    Streamlit reports a missing secrets file in the UI before raising
+    FileNotFoundError. Checking configured paths first keeps ordinary local
+    demo runs quiet while preserving file and directory based secrets.
+    """
+    if st is None:
+        return False
+    try:
+        paths = st.config.get_option("secrets.files")
+    except Exception:
+        # If Streamlit cannot expose its configured paths, retain the normal
+        # secret lookup behavior so configuration errors are not hidden.
+        return True
+    for configured_path in paths:
+        path = Path(configured_path)
+        if path.is_file():
+            return True
+        if path.is_dir():
+            try:
+                if any(path.iterdir()):
+                    return True
+            except OSError:
+                continue
+    return False
 
 
 def _get_credentials():
