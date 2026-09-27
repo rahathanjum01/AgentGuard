@@ -20,6 +20,32 @@ if str(PROJECT_ROOT) not in sys.path:
 from moss import DocumentInfo, MossClient
 
 CORPUS_PATH = PROJECT_ROOT / "agentguard-context.json"
+SECRETS_PATH = PROJECT_ROOT / ".streamlit" / "secrets.toml"
+
+
+def _settings_from_environment_and_local_secrets():
+    """Read seed settings from env vars, falling back to ignored local secrets."""
+    settings = {}
+    if SECRETS_PATH.is_file():
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # Python 3.10, supported by the Moss SDK
+            try:
+                import toml
+            except ModuleNotFoundError as error:
+                raise SystemExit(
+                    "Reading .streamlit/secrets.toml requires tomllib (Python 3.11+) "
+                    "or the toml package. Set MOSS_PROJECT_ID and MOSS_PROJECT_KEY "
+                    "as environment variables instead."
+                ) from error
+            settings = toml.loads(SECRETS_PATH.read_text(encoding="utf-8-sig"))
+        else:
+            settings = tomllib.loads(SECRETS_PATH.read_text(encoding="utf-8-sig"))
+
+    return {
+        name: os.getenv(name) or settings.get(name)
+        for name in ("MOSS_PROJECT_ID", "MOSS_PROJECT_KEY", "MOSS_INDEX_NAME")
+    }
 
 
 async def main() -> None:
@@ -30,12 +56,13 @@ async def main() -> None:
         help="Explicitly download and load the index after creation (uses additional cloud work).",
     )
     args = parser.parse_args()
-    project_id = os.getenv("MOSS_PROJECT_ID")
-    project_key = os.getenv("MOSS_PROJECT_KEY")
+    settings = _settings_from_environment_and_local_secrets()
+    project_id = settings["MOSS_PROJECT_ID"]
+    project_key = settings["MOSS_PROJECT_KEY"]
     if not project_id or not project_key:
         raise SystemExit("Set MOSS_PROJECT_ID and MOSS_PROJECT_KEY before seeding Moss.")
 
-    index_name = os.getenv("MOSS_INDEX_NAME", "agentguard-context")
+    index_name = settings["MOSS_INDEX_NAME"] or "agentguard-context"
     records = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
     docs = [
         DocumentInfo(
